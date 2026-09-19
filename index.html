@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ATM / ID Card A4 Print Master - Mobile & Tablet Responsive Studio</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- jsPDF for Clean PDF Export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- OpenCV.js for Computer Vision & 4-Corner Document Detection -->
+    <script async src="https://docs.opencv.org/4.7.0/opencv.js" onload="onOpenCvReady()"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* ISO/IEC 7810 ID-1 standard: 85.60mm x 53.98mm (~1.5858 ratio) */
+        .card-ratio-box {
+            aspect-ratio: 85.6 / 53.98;
+        }
+
+        /* Physical A4 print dimensions simulation: 210mm x 297mm */
+        .a4-sheet {
+            width: 210mm;
+            min-height: 297mm;
+            height: 297mm;
+            box-sizing: border-box;
+            background: white;
+            position: relative;
+            margin: 0 auto;
+        }
+
+        /* Exact mm grid for print (2 columns x 4 rows) */
+        .a4-print-grid {
+            display: grid;
+            grid-template-columns: 85.6mm 85.6mm;
+            grid-auto-rows: 53.98mm;
+            column-gap: 8mm;
+            row-gap: 6.5mm;
+            justify-content: center;
+            align-content: center;
+            padding-top: 13.5mm;
+            padding-bottom: 13.5mm;
+            box-sizing: border-box;
+        }
+
+        .card-cell-printable {
+            width: 85.6mm;
+            height: 53.98mm;
+            position: relative;
+            box-sizing: border-box;
+            overflow: hidden;
+            background: transparent;
+        }
+
+        /* Precision crop marks */
+        .crop-mark {
+            position: absolute;
+            pointer-events: none;
+            border-color: #cbd5e1;
+            z-index: 10;
+        }
+
+        /* Printing optimizations: Empty cells are 100% white and invisible */
+        @media print {
+            @page {
+                size: A4 portrait;
+                margin: 0;
+            }
+            body {
+                background: white !important;
+                color: black !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .no-print, .mobile-bottom-bar, #viewToggleContainer {
+                display: none !important;
+            }
+            .print-only-container {
+                display: block !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            .a4-sheet {
+                box-shadow: none !important;
+                margin: 0 !important;
+                border: none !important;
+                page-break-after: avoid;
+                page-break-inside: avoid;
+            }
+            .card-cell-printable.empty-slot {
+                visibility: hidden !important;
+                border: none !important;
+                background: transparent !important;
+            }
+        }
+
+        /* Photoshop-style Canvas Checkerboard */
+        .checkerboard-bg {
+            background-color: #18181b;
+            background-image: linear-gradient(45deg, #27272a 25%, transparent 25%),
+                              linear-gradient(-45deg, #27272a 25%, transparent 25%),
+                              linear-gradient(45deg, transparent 75%, #27272a 75%),
+                              linear-gradient(-45deg, transparent 75%, #27272a 75%);
+            background-size: 16px 16px;
+            background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #090d16;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+
+        /* Touch-friendly hit target helper */
+        .touch-action-none {
+            touch-action: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased flex flex-col select-none pb-20 xl:pb-6">
+
+    <!-- Top Navigation Header -->
+    <header class="no-print sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-3 sm:px-6 py-2.5 shadow-xl">
+        <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
+            <!-- Brand & Status -->
+            <div class="flex items-center space-x-2.5 sm:space-x-3">
+                <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-indigo-600 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-indigo-500/25 shrink-0">
+                    <i data-lucide="crop" class="w-4 h-4 sm:w-5 sm:h-5 text-white"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-sm sm:text-base md:text-lg text-white leading-tight flex items-center gap-1.5 sm:gap-2">
+                        ATM / ID Card Print Master
+                        <span id="cvStatusBadge" class="hidden sm:inline-flex text-[10px] bg-amber-500/20 text-amber-300 font-medium px-2 py-0.5 rounded-full border border-amber-500/30 items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span> Loading AI...
+                        </span>
+                    </h1>
+                    <p class="hidden sm:block text-[11px] text-slate-400">Photoshop 4-Corner Transform • 85.60 × 53.98 mm Fit • Auto A4 Layout</p>
+                </div>
+            </div>
+
+            <!-- Desktop & Tablet Action Buttons -->
+            <div class="hidden md:flex items-center flex-wrap gap-2">
+                <!-- Batch Upload -->
+                <label class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition flex items-center gap-1.5 shadow-sm cursor-pointer">
+                    <i data-lucide="folder-up" class="w-3.5 h-3.5 text-indigo-400"></i> Batch Upload
+                    <input type="file" multiple accept="image/*" class="hidden" onchange="handleBatchUpload(event)">
+                </label>
+
+                <!-- Cutting Marks Toggle -->
+                <button onclick="toggleCuttingMarks()" id="toggleMarksBtn" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition flex items-center gap-1.5">
+                    <i data-lucide="scissors" class="w-3.5 h-3.5 text-slate-400"></i> Marks: <span id="cropMarksStatus" class="text-emerald-400 font-semibold">ON</span>
+                </button>
+
+                <button onclick="clearAllSlots()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 text-rose-300 hover:bg-rose-950/40 hover:text-rose-200 border border-slate-700 transition flex items-center gap-1.5">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Clear
+                </button>
+                <button onclick="downloadPDF()" id="pdfBtn" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center gap-1.5 shadow-md shadow-indigo-600/30">
+                    <i data-lucide="file-down" class="w-3.5 h-3.5"></i> PDF
+                </button>
+                <button onclick="handlePrint()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center gap-1.5 shadow-md shadow-emerald-600/30">
+                    <i data-lucide="printer" class="w-3.5 h-3.5"></i> Print A4
+                </button>
+            </div>
+
+            <!-- Mobile Quick Badges & Menu Trigger -->
+            <div class="flex items-center gap-2 md:hidden">
+                <span id="cardCountBadgeMobile" class="text-[11px] font-mono px-2 py-0.5 bg-slate-800 text-slate-300 rounded-md border border-slate-700">0/8</span>
+                <label class="p-2 rounded-lg bg-slate-800 text-slate-200 border border-slate-700 cursor-pointer">
+                    <i data-lucide="folder-up" class="w-4 h-4 text-indigo-400"></i>
+                    <input type="file" multiple accept="image/*" class="hidden" onchange="handleBatchUpload(event)">
+                </label>
+                <button onclick="clearAllSlots()" class="p-2 rounded-lg bg-slate-800 text-rose-400 border border-slate-700">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Mobile & Tablet Segmented View Switcher -->
+        <div id="viewToggleContainer" class="xl:hidden mt-2.5 pt-2 border-t border-slate-800 flex items-center justify-center">
+            <div class="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center w-full max-w-sm">
+                <button id="tabBtnSlots" onclick="switchMobileView('slots')" class="flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 bg-indigo-600 text-white shadow-sm">
+                    <i data-lucide="layout-grid" class="w-3.5 h-3.5"></i> Card Slots (8)
+                </button>
+                <button id="tabBtnSheet" onclick="switchMobileView('sheet')" class="flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 text-slate-400 hover:text-slate-200">
+                    <i data-lucide="sheet" class="w-3.5 h-3.5"></i> Live A4 Sheet
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 lg:p-6 grid grid-cols-1 xl:grid-cols-12 gap-5 no-print">
+        
+        <!-- Section 1: Card Slots Grid (Responsive 1-col on mobile, 2-col on tablet/desktop) -->
+        <section id="sectionSlots" class="xl:col-span-7 flex flex-col gap-3.5">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 sm:p-5 shadow-sm">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <h2 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                            <i data-lucide="layers" class="w-4 h-4 text-indigo-400"></i> Card Matrix (2 × 4)
+                        </h2>
+                        <p class="text-[11px] sm:text-xs text-slate-400">Har slot par upload ya camera karein. Photoshop Distort se border adjust hokar standard ATM size me flex ho jayega.</p>
+                    </div>
+                    <span id="cardCountBadge" class="hidden sm:inline-block text-xs font-mono px-2.5 py-1 bg-slate-800 text-slate-300 rounded-lg border border-slate-700">0 / 8 Cards</span>
+                </div>
+
+                <!-- Info Hint -->
+                <div class="bg-indigo-950/40 border border-indigo-800/40 rounded-xl p-2.5 sm:p-3 text-[11px] sm:text-xs text-indigo-200 flex items-start gap-2 mb-3">
+                    <i data-lucide="sparkles" class="w-4 h-4 text-indigo-400 shrink-0 mt-0.5"></i>
+                    <div>
+                        <strong>Mobile & Tablet Optimized:</strong> Upload ya camera click par 4-corner perspective tool khulega. Khali boxes print aur PDF me <strong>100% white</strong> rahenge.
+                    </div>
+                </div>
+
+                <!-- 8 Cards Grid -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="slotsGrid">
+                    <!-- Injected via JavaScript -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 2: Real-time Live A4 Sheet Preview -->
+        <section id="sectionSheet" class="hidden xl:flex xl:col-span-5 flex-col gap-3">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-sm flex flex-col sticky top-20">
+                <div class="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="sheet" class="w-4 h-4 text-emerald-400"></i>
+                        <h3 class="text-xs sm:text-sm font-bold text-white">Live A4 Paper Sheet Preview</h3>
+                    </div>
+                    <div class="flex items-center gap-2 text-[11px] text-slate-400">
+                        <span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span> 210 × 297 mm
+                    </div>
+                </div>
+
+                <div class="text-[11px] text-slate-400 my-2 flex items-center justify-between">
+                    <span>Empty cells are 100% blank</span>
+                    <span class="text-slate-500 font-mono">1:1 Physical Scale</span>
+                </div>
+
+                <!-- Scaled Sheet Viewport (Auto dynamically scaled via JS on mobile & tablet) -->
+                <div id="sheetViewportContainer" class="w-full bg-slate-950 rounded-xl p-2 sm:p-4 border border-slate-800 overflow-hidden flex justify-center items-start min-h-[440px] max-h-[700px]">
+                    <div id="sheetScaleWrapper" class="origin-top my-1 transition-transform duration-200 shadow-2xl">
+                        <!-- Actual A4 Simulation Container -->
+                        <div id="previewA4Sheet" class="a4-sheet text-slate-800 relative shadow-2xl rounded-sm">
+                            <div class="a4-print-grid h-full" id="sheetGridCells">
+                                <!-- 8 Preview Cells -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-2.5 bg-slate-800/40 rounded-xl p-2.5 border border-slate-800 text-[11px] text-slate-300">
+                    <div class="font-semibold text-slate-200 flex items-center gap-1 mb-1">
+                        <i data-lucide="info" class="w-3.5 h-3.5 text-indigo-400"></i> Exact Size Printing Guide:
+                    </div>
+                    <p class="text-slate-400 leading-snug">
+                        Printer settings me <strong>Scale: 100% (Actual Size)</strong> aur <strong>Margins: None</strong> rakhein taaki card plastic wallet me accurate fit ho.
+                    </p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Mobile Bottom Action Bar (Fixed on mobile phones & small tablets) -->
+    <div class="xl:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800 px-4 py-2.5 flex items-center justify-between gap-3 shadow-2xl mobile-bottom-bar">
+        <button onclick="toggleCuttingMarks()" class="flex-1 py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium border border-slate-700 flex items-center justify-center gap-1.5 transition">
+            <i data-lucide="scissors" class="w-3.5 h-3.5 text-slate-400"></i> Marks
+        </button>
+        <button onclick="downloadPDF()" class="flex-1 py-2 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-md shadow-indigo-600/30 transition">
+            <i data-lucide="file-down" class="w-3.5 h-3.5"></i> Download PDF
+        </button>
+        <button onclick="handlePrint()" class="flex-1 py-2 px-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/30 transition">
+            <i data-lucide="printer" class="w-3.5 h-3.5"></i> Print A4
+        </button>
+    </div>
+
+    <!-- Responsive Camera Capture Modal -->
+    <div id="cameraModal" class="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm hidden items-center justify-center p-2 sm:p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            <div class="p-3 sm:p-4 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="camera" class="w-4 h-4 text-indigo-400"></i>
+                    <h3 class="font-semibold text-xs sm:text-sm text-white" id="cameraModalTitle">Card Camera Capture</h3>
+                </div>
+                <button onclick="closeCameraModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="relative bg-black aspect-[4/3] flex items-center justify-center overflow-hidden">
+                <video id="webcamVideo" autoplay playsinline class="w-full h-full object-cover"></video>
+                <!-- Target Frame Guide -->
+                <div class="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
+                    <div class="w-full card-ratio-box border-2 border-dashed border-cyan-400 rounded-xl relative shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]">
+                        <div class="absolute top-2 left-2 text-[9px] sm:text-[10px] bg-cyan-600/90 text-white px-2 py-0.5 rounded-full font-mono">
+                            Align ID / Card Inside Frame
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-3 sm:p-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-2.5">
+                <button onclick="switchCamera()" class="px-3 py-2 text-xs font-medium rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition flex items-center gap-1.5">
+                    <i data-lucide="switch-camera" class="w-4 h-4"></i> Switch
+                </button>
+                <button onclick="takeSnapshot()" class="flex-1 py-2.5 text-xs sm:text-sm font-bold rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30">
+                    <i data-lucide="aperture" class="w-4 h-4"></i> Capture & Distort
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Responsive Photoshop Free Transform & Distort Studio Modal -->
+    <div id="photoshopModal" class="fixed inset-0 z-50 bg-black/95 backdrop-blur-md hidden items-center justify-center p-1 sm:p-3 md:p-5">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-5xl h-[98vh] sm:h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            
+            <!-- Studio Header -->
+            <div class="px-3 sm:px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white text-xs font-mono shadow-md shadow-blue-500/20 shrink-0">
+                        PS
+                    </div>
+                    <div class="truncate">
+                        <h3 class="font-bold text-xs sm:text-sm text-white flex items-center gap-1.5 truncate">
+                            Free Transform & Distort
+                        </h3>
+                        <p class="hidden sm:block text-[10px] text-slate-400">Drag 4 corner handles to isolate card & flex to exact ID-1 ratio</p>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                    <button onclick="autoDetectCornersNow()" class="px-2.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800/50 flex items-center gap-1 transition">
+                        <i data-lucide="wand-2" class="w-3.5 h-3.5"></i> <span class="hidden sm:inline">Auto-Detect</span>
+                    </button>
+                    <button onclick="resetCornersToFull()" class="px-2.5 py-1.5 text-[11px] sm:text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1 transition">
+                        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span class="hidden sm:inline">Reset</span>
+                    </button>
+                    <button onclick="closePhotoshopModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Studio Workspace (Responsive: Stack on Mobile, 2-Col on Desktop) -->
+            <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-2.5 p-2 sm:p-3 overflow-hidden min-h-0">
+                
+                <!-- Left: Interactive Canvas with Draggable Handles -->
+                <div class="lg:col-span-8 flex flex-col gap-1.5 h-full min-h-0">
+                    <div class="flex items-center justify-between text-[11px] text-slate-400 px-1 shrink-0">
+                        <span class="flex items-center gap-1 text-cyan-300 truncate">
+                            <i data-lucide="mouse-pointer-click" class="w-3.5 h-3.5 shrink-0"></i> Touch & Drag 4 control corners
+                        </span>
+                        <!-- Active Corner Indicator -->
+                        <span id="selectedCornerName" class="text-amber-400 font-mono text-[10px] bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/40">
+                            Selected: TL Corner
+                        </span>
+                    </div>
+
+                    <!-- Canvas Container -->
+                    <div class="flex-1 relative checkerboard-bg rounded-xl border border-slate-800 flex items-center justify-center overflow-hidden select-none touch-action-none" id="canvasContainer">
+                        <canvas id="transformCanvas" class="cursor-crosshair block max-w-full max-h-full"></canvas>
+                        
+                        <!-- Offset Magnifying Loupe (Finger-safe positioning) -->
+                        <div id="zoomLoupe" class="absolute w-24 h-24 sm:w-28 sm:h-28 rounded-full border-2 border-white shadow-2xl overflow-hidden pointer-events-none hidden z-30 bg-black">
+                            <canvas id="loupeCanvas" width="112" height="112" class="w-full h-full"></canvas>
+                            <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <div class="w-3.5 h-0.5 bg-red-500"></div>
+                                <div class="h-3.5 w-0.5 bg-red-500 absolute"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Touchscreen Micro-Adjustment D-Pad (Nudge Corner by 1px) -->
+                    <div class="bg-slate-950/80 rounded-xl p-2 border border-slate-800 flex items-center justify-between gap-2 shrink-0">
+                        <!-- Corner Selector Buttons -->
+                        <div class="flex items-center gap-1">
+                            <button onclick="selectCornerIndex(0)" id="cBtn-0" class="px-2 py-1 text-[10px] font-mono rounded bg-indigo-600 text-white font-bold">TL</button>
+                            <button onclick="selectCornerIndex(1)" id="cBtn-1" class="px-2 py-1 text-[10px] font-mono rounded bg-slate-800 text-slate-300">TR</button>
+                            <button onclick="selectCornerIndex(2)" id="cBtn-2" class="px-2 py-1 text-[10px] font-mono rounded bg-slate-800 text-slate-300">BR</button>
+                            <button onclick="selectCornerIndex(3)" id="cBtn-3" class="px-2 py-1 text-[10px] font-mono rounded bg-slate-800 text-slate-300">BL</button>
+                        </div>
+
+                        <!-- Micro-Nudge D-Pad -->
+                        <div class="flex items-center gap-1">
+                            <span class="hidden sm:inline text-[10px] text-slate-500 mr-1">Fine-Tune:</span>
+                            <button onclick="nudgeActiveCorner(0, -1)" class="w-7 h-7 bg-slate-800 hover:bg-slate-700 active:bg-indigo-600 rounded-lg flex items-center justify-center text-slate-200 border border-slate-700" title="Nudge Up">
+                                <i data-lucide="chevron-up" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="nudgeActiveCorner(0, 1)" class="w-7 h-7 bg-slate-800 hover:bg-slate-700 active:bg-indigo-600 rounded-lg flex items-center justify-center text-slate-200 border border-slate-700" title="Nudge Down">
+                                <i data-lucide="chevron-down" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="nudgeActiveCorner(-1, 0)" class="w-7 h-7 bg-slate-800 hover:bg-slate-700 active:bg-indigo-600 rounded-lg flex items-center justify-center text-slate-200 border border-slate-700" title="Nudge Left">
+                                <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="nudgeActiveCorner(1, 0)" class="w-7 h-7 bg-slate-800 hover:bg-slate-700 active:bg-indigo-600 rounded-lg flex items-center justify-center text-slate-200 border border-slate-700" title="Nudge Right">
+                                <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right / Bottom: Live Warped Result Simulation & Commit -->
+                <div class="lg:col-span-4 flex flex-col justify-between gap-2.5 bg-slate-950/60 p-2.5 sm:p-3 rounded-xl border border-slate-800 overflow-y-auto">
+                    <div class="flex items-center justify-between pb-1.5 border-b border-slate-800">
+                        <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                            <i data-lucide="shrink" class="w-3.5 h-3.5 text-indigo-400"></i>
+                            Flex & Fitted Card Result
+                        </span>
+                        <span class="text-[10px] font-mono text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800/40">
+                            85.6 × 53.98 mm
+                        </span>
+                    </div>
+
+                    <!-- Realtime Warped Card Preview -->
+                    <div class="flex flex-col items-center justify-center bg-slate-900/90 rounded-xl border border-slate-800 p-2">
+                        <div class="w-full max-w-[280px] card-ratio-box bg-slate-950 rounded-lg shadow-xl overflow-hidden border border-indigo-500/50 flex items-center justify-center relative">
+                            <canvas id="realtimeDistortOutputCanvas" class="w-full h-full object-cover"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="bg-indigo-950/30 p-2 rounded-lg border border-indigo-800/40 text-[10px] text-indigo-200">
+                        <div class="font-semibold text-white flex items-center gap-1">
+                            <i data-lucide="check-circle" class="w-3 h-3 text-emerald-400"></i> Background Eliminator
+                        </div>
+                        <p class="text-slate-400 text-[10px] mt-0.5">Bahari bedsheet, table ya ungli cut hokar card auto-flex ho jayega.</p>
+                    </div>
+
+                    <div class="pt-1 flex items-center gap-2">
+                        <button onclick="closePhotoshopModal()" class="flex-1 py-2 text-xs font-semibold rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+                            Cancel
+                        </button>
+                        <button onclick="commitDistortToSlot()" class="flex-1 py-2 text-xs font-bold rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/30">
+                            <i data-lucide="check" class="w-4 h-4"></i> Apply Fit
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden Printable Sheet DOM for Direct Browser Printing (Pure 1:1 Scale) -->
+    <div class="print-only-container hidden">
+        <div id="directPrintSheet" class="a4-sheet">
+            <div class="a4-print-grid" id="directPrintGrid"></div>
+        </div>
+    </div>
+
+    <!-- Processing Canvas for OpenCV operations -->
+    <canvas id="cvWorkerCanvas" class="hidden"></canvas>
+
+    <script>
+        // --- Core Application State ---
+        const TOTAL_SLOTS = 8;
+        const ISO_CARD_WIDTH = 85.60;
+        const ISO_CARD_HEIGHT = 53.98;
+        const CARD_RATIO = ISO_CARD_WIDTH / ISO_CARD_HEIGHT; // ~1.58577
+        
+        let isOpenCvReady = false;
+        let showCuttingMarks = true;
+        let currentMobileView = 'slots'; // 'slots' or 'sheet'
+
+        let cardSlots = Array.from({ length: TOTAL_SLOTS }, (_, i) => ({
+            id: i + 1,
+            originalImage: null,
+            croppedImage: null,
+            fileName: null,
+            corners: null // [{x,y}, {x,y}, {x,y}, {x,y}] in original image space
+        }));
+
+        let currentActiveSlot = null;
+        let webcamStream = null;
+        let currentFacingMode = 'environment';
+
+        // Photoshop Distort Studio Interactive Engine State
+        let psEngine = {
+            image: null,
+            scale: 1,
+            corners: [], // [TL, TR, BR, BL]
+            activeHandle: 0,
+            hoverHandle: -1,
+            meshDivisions: 6
+        };
+
+        const CORNER_LABELS = ['TL (Top-Left)', 'TR (Top-Right)', 'BR (Bottom-Right)', 'BL (Bottom-Left)'];
+
+        function onOpenCvReady() {
+            isOpenCvReady = true;
+            const badge = document.getElementById('cvStatusBadge');
+            if (badge) {
+                badge.className = "hidden sm:inline-flex text-[10px] bg-emerald-500/20 text-emerald-300 font-medium px-2 py-0.5 rounded-full border border-emerald-500/30 items-center gap-1";
+                badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> AI Edge Ready`;
+            }
+        }
+
+        // --- Responsive Mobile View Switcher ---
+        function switchMobileView(view) {
+            currentMobileView = view;
+            const secSlots = document.getElementById('sectionSlots');
+            const secSheet = document.getElementById('sectionSheet');
+            const tabBtnSlots = document.getElementById('tabBtnSlots');
+            const tabBtnSheet = document.getElementById('tabBtnSheet');
+
+            if (view === 'slots') {
+                secSlots.classList.remove('hidden');
+                secSheet.classList.add('hidden');
+                secSheet.classList.remove('flex');
+                tabBtnSlots.className = "flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 bg-indigo-600 text-white shadow-sm";
+                tabBtnSheet.className = "flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 text-slate-400 hover:text-slate-200";
+            } else {
+                secSlots.classList.add('hidden');
+                secSheet.classList.remove('hidden');
+                secSheet.classList.add('flex');
+                tabBtnSheet.className = "flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 bg-indigo-600 text-white shadow-sm";
+                tabBtnSlots.className = "flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 text-slate-400 hover:text-slate-200";
+                fitA4SheetResponsive();
+            }
+        }
+
+        // --- Dynamic A4 Responsive Scale Calculator ---
+        function fitA4SheetResponsive() {
+            const container = document.getElementById('sheetViewportContainer');
+            const wrapper = document.getElementById('sheetScaleWrapper');
+            if (!container || !wrapper) return;
+
+            // A4 is 210mm wide x 297mm high (~794px x 1123px at 96 DPI screen preview)
+            const a4WidthPx = 794; 
+            const containerWidth = container.clientWidth - 24; // padding allowance
+            
+            // Calculate best scale to fit screen width
+            let targetScale = containerWidth / a4WidthPx;
+            // Cap scale between 0.32 and 0.65 for desktop clarity
+            targetScale = Math.min(Math.max(targetScale, 0.32), 0.68);
+            
+            wrapper.style.transform = `scale(${targetScale})`;
+        }
+
+        // --- Initialize 8 Card Slots Matrix UI ---
+        function initializeSlotsUI() {
+            const container = document.getElementById('slotsGrid');
+            const sheetGrid = document.getElementById('sheetGridCells');
+            container.innerHTML = '';
+            sheetGrid.innerHTML = '';
+
+            for (let i = 1; i <= TOTAL_SLOTS; i++) {
+                // UI Slot Card
+                const slotCard = document.createElement('div');
+                slotCard.className = "bg-slate-800/70 border border-slate-700/80 rounded-xl p-2.5 sm:p-3 flex flex-col gap-2 relative transition hover:border-slate-600 shadow-sm";
+                slotCard.id = `slot-card-${i}`;
+                slotCard.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                            <span class="w-5 h-5 rounded-md bg-indigo-600/30 text-indigo-400 border border-indigo-500/30 flex items-center justify-center text-[10px] font-mono">${i}</span>
+                            Slot #${i}
+                        </span>
+                        <div class="flex items-center gap-1">
+                            <button onclick="rotateSlotImage(${i})" id="rot-btn-${i}" title="Rotate 90°" class="hidden text-slate-400 hover:text-indigo-300 p-1.5 rounded-lg hover:bg-slate-700 transition">
+                                <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+                            </button>
+                            <button onclick="openPhotoshopStudio(${i})" id="crop-btn-${i}" title="Photoshop Distort & Warp" class="hidden text-cyan-400 hover:text-cyan-300 p-1.5 rounded-lg hover:bg-slate-700 transition">
+                                <i data-lucide="crop" class="w-3.5 h-3.5"></i>
+                            </button>
+                            <button onclick="clearSingleSlot(${i})" id="clear-btn-${i}" title="Remove card" class="hidden text-slate-400 hover:text-rose-400 p-1.5 rounded-lg hover:bg-slate-700 transition">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Slot Preview Frame -->
+                    <div class="w-full card-ratio-box bg-slate-900/90 rounded-lg border-2 border-dashed border-slate-700 overflow-hidden relative flex items-center justify-center" id="slot-preview-box-${i}">
+                        <div id="slot-empty-state-${i}" class="flex flex-col items-center justify-center p-2 text-center select-none">
+                            <i data-lucide="image-plus" class="w-5 h-5 text-slate-600 mb-1"></i>
+                            <span class="text-[11px] text-slate-500 font-medium">Empty Slot #${i}</span>
+                        </div>
+                        <img id="slot-img-${i}" class="w-full h-full object-cover hidden rounded-[3.18mm]" alt="Card ${i}">
+                        <div id="slot-loader-${i}" class="absolute inset-0 bg-slate-950/80 hidden items-center justify-center flex-col gap-1.5 z-20">
+                            <i data-lucide="loader-2" class="w-5 h-5 text-cyan-400 animate-spin"></i>
+                            <span class="text-[10px] text-cyan-200">Finding card boundary...</span>
+                        </div>
+                    </div>
+
+                    <!-- Action Upload & Camera Buttons -->
+                    <div class="grid grid-cols-2 gap-2 mt-0.5">
+                        <label class="cursor-pointer flex items-center justify-center gap-1.5 py-2 px-2 bg-slate-700 hover:bg-slate-600 active:bg-slate-500 text-white rounded-xl text-xs font-medium transition shadow-sm">
+                            <i data-lucide="upload" class="w-3.5 h-3.5"></i> Upload
+                            <input type="file" accept="image/*" class="hidden" onchange="handleSingleUpload(event, ${i})">
+                        </label>
+                        <button type="button" onclick="openCameraModal(${i})" class="flex items-center justify-center gap-1.5 py-2 px-2 bg-slate-700 hover:bg-slate-600 active:bg-slate-500 text-white rounded-xl text-xs font-medium transition shadow-sm">
+                            <i data-lucide="camera" class="w-3.5 h-3.5"></i> Camera
+                        </button>
+                    </div>
+                `;
+                container.appendChild(slotCard);
+
+                // Right A4 Sheet Preview Cell
+                const sheetCell = document.createElement('div');
+                sheetCell.className = "card-cell-printable empty-slot relative";
+                sheetCell.id = `sheet-cell-${i}`;
+                sheetCell.innerHTML = `
+                    <div class="crop-mark top-0 left-0 border-t-2 border-l-2 w-2.5 h-2.5 -translate-x-1 -translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <div class="crop-mark top-0 right-0 border-t-2 border-r-2 w-2.5 h-2.5 translate-x-1 -translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <div class="crop-mark bottom-0 left-0 border-b-2 border-l-2 w-2.5 h-2.5 -translate-x-1 translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <div class="crop-mark bottom-0 right-0 border-b-2 border-r-2 w-2.5 h-2.5 translate-x-1 translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    
+                    <img id="sheet-img-${i}" class="w-full h-full object-cover hidden rounded-[3.18mm]" alt="Print ${i}">
+                `;
+                sheetGrid.appendChild(sheetCell);
+            }
+
+            lucide.createIcons();
+            updateCountBadge();
+            fitA4SheetResponsive();
+        }
+
+        // --- Single & Batch Upload Handlers ---
+        function handleSingleUpload(event, slotNumber) {
+            const file = event.target.files[0];
+            if (!file) return;
+            loadFileIntoSlot(file, slotNumber, true);
+            event.target.value = '';
+        }
+
+        function handleBatchUpload(event) {
+            const files = Array.from(event.target.files).slice(0, TOTAL_SLOTS);
+            if (!files.length) return;
+
+            let targetSlotIndex = 1;
+            files.forEach((file, idx) => {
+                while (targetSlotIndex <= TOTAL_SLOTS && cardSlots[targetSlotIndex - 1].croppedImage) {
+                    targetSlotIndex++;
+                }
+                if (targetSlotIndex <= TOTAL_SLOTS) {
+                    loadFileIntoSlot(file, targetSlotIndex, idx === 0);
+                    targetSlotIndex++;
+                }
+            });
+            event.target.value = '';
+        }
+
+        function loadFileIntoSlot(file, slotNumber, openStudioImmediately = false) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    executeCardDetectionPipeline(img, slotNumber, file.name, openStudioImmediately);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // --- Computer Vision Pipeline (80°-100° Corner Extraction) ---
+        function executeCardDetectionPipeline(img, slotNumber, fileName = `Card-${slotNumber}`, openStudio = false) {
+            const loader = document.getElementById(`slot-loader-${slotNumber}`);
+            if (loader) loader.classList.replace('hidden', 'flex');
+
+            setTimeout(() => {
+                let detectedCorners = null;
+
+                if (isOpenCvReady && typeof cv !== 'undefined') {
+                    try {
+                        detectedCorners = detectCardWithOpenCV(img);
+                    } catch (err) {
+                        detectedCorners = detectCardFallback(img);
+                    }
+                } else {
+                    detectedCorners = detectCardFallback(img);
+                }
+
+                cardSlots[slotNumber - 1].originalImage = img;
+                cardSlots[slotNumber - 1].corners = detectedCorners;
+                cardSlots[slotNumber - 1].fileName = fileName;
+
+                const croppedDataUrl = warpPerspectiveCrop(img, detectedCorners);
+                cardSlots[slotNumber - 1].croppedImage = croppedDataUrl;
+
+                if (loader) loader.classList.replace('flex', 'hidden');
+
+                updateSlotPreview(slotNumber);
+                updateSheetPreview(slotNumber);
+                updateCountBadge();
+
+                if (openStudio) {
+                    openPhotoshopStudio(slotNumber);
+                }
+            }, 60);
+        }
+
+        function detectCardWithOpenCV(img) {
+            const maxDim = 800;
+            let scale = 1;
+            if (img.width > maxDim || img.height > maxDim) {
+                scale = maxDim / Math.max(img.width, img.height);
+            }
+            const procW = Math.round(img.width * scale);
+            const procH = Math.round(img.height * scale);
+
+            const canvas = document.getElementById('cvWorkerCanvas');
+            canvas.width = procW;
+            canvas.height = procH;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, procW, procH);
+
+            let src = cv.imread(canvas);
+            let gray = new cv.Mat();
+            let blurred = new cv.Mat();
+            let edges = new cv.Mat();
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+
+            try {
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+                cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+                cv.Canny(blurred, edges, 40, 140, 3, false);
+
+                let kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+                cv.dilate(edges, edges, kernel);
+                kernel.delete();
+
+                cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+                let maxArea = 0;
+                let bestPoly = null;
+                const minAcceptableArea = (procW * procH) * 0.08;
+
+                for (let i = 0; i < contours.size(); ++i) {
+                    let cnt = contours.get(i);
+                    let area = cv.contourArea(cnt);
+                    if (area > minAcceptableArea) {
+                        let perimeter = cv.arcLength(cnt, true);
+                        let approx = new cv.Mat();
+                        cv.approxPolyDP(cnt, approx, 0.022 * perimeter, true);
+
+                        if (approx.rows === 4 && cv.isContourConvex(approx)) {
+                            if (checkQuadAngles(approx) && area > maxArea) {
+                                maxArea = area;
+                                if (bestPoly) bestPoly.delete();
+                                bestPoly = approx.clone();
+                            }
+                        }
+                        approx.delete();
+                    }
+                }
+
+                if (bestPoly) {
+                    let pts = [];
+                    for (let r = 0; r < 4; r++) {
+                        pts.push({
+                            x: bestPoly.data32S[r * 2] / scale,
+                            y: bestPoly.data32S[r * 2 + 1] / scale
+                        });
+                    }
+                    bestPoly.delete();
+                    return orderCardCorners(pts);
+                }
+            } finally {
+                src.delete();
+                gray.delete();
+                blurred.delete();
+                edges.delete();
+                contours.delete();
+                hierarchy.delete();
+            }
+
+            return detectCardFallback(img);
+        }
+
+        function checkQuadAngles(approx) {
+            let pts = [];
+            for (let i = 0; i < 4; i++) {
+                pts.push({ x: approx.data32S[i * 2], y: approx.data32S[i * 2 + 1] });
+            }
+
+            for (let i = 0; i < 4; i++) {
+                let p1 = pts[(i + 3) % 4];
+                let p2 = pts[i];
+                let p3 = pts[(i + 1) % 4];
+
+                let v1 = { x: p1.x - p2.x, y: p1.y - p2.y };
+                let v2 = { x: p3.x - p2.x, y: p3.y - p2.y };
+
+                let dot = v1.x * v2.x + v1.y * v2.y;
+                let mag1 = Math.hypot(v1.x, v1.y);
+                let mag2 = Math.hypot(v2.x, v2.y);
+                if (mag1 === 0 || mag2 === 0) return false;
+
+                let cosAngle = dot / (mag1 * mag2);
+                let angleDeg = Math.acos(Math.max(-1, Math.min(1, cosAngle))) * (180 / Math.PI);
+
+                if (angleDeg < 72 || angleDeg > 108) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function detectCardFallback(img) {
+            const w = img.width;
+            const h = img.height;
+            const cardW = w * 0.84;
+            const cardH = cardW / CARD_RATIO;
+
+            let finalW = cardW;
+            let finalH = cardH;
+
+            if (finalH > h * 0.88) {
+                finalH = h * 0.84;
+                finalW = finalH * CARD_RATIO;
+            }
+
+            const startX = (w - finalW) / 2;
+            const startY = (h - finalH) / 2;
+
+            return [
+                { x: startX, y: startY },
+                { x: startX + finalW, y: startY },
+                { x: startX + finalW, y: startY + finalH },
+                { x: startX, y: startY + finalH }
+            ];
+        }
+
+        function orderCardCorners(pts) {
+            pts.sort((a, b) => a.y - b.y);
+            const topTwo = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+            const bottomTwo = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+
+            return [
+                topTwo[0],    // TL
+                topTwo[1],    // TR
+                bottomTwo[1], // BR
+                bottomTwo[0]  // BL
+            ];
+        }
+
+        // --- Photoshop Distort Studio Interactive Handlers ---
+        function openPhotoshopStudio(slotNum) {
+            const slot = cardSlots[slotNum - 1];
+            if (!slot.originalImage) return;
+
+            currentActiveSlot = slotNum;
+            psEngine.image = slot.originalImage;
+            psEngine.corners = JSON.parse(JSON.stringify(slot.corners));
+            psEngine.activeHandle = 0;
+
+            const modal = document.getElementById('photoshopModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+
+            selectCornerIndex(0);
+
+            setTimeout(() => {
+                initTransformCanvas();
+                updateRealtimeDistortPreview();
+            }, 60);
+        }
+
+        function closePhotoshopModal() {
+            const modal = document.getElementById('photoshopModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            currentActiveSlot = null;
+        }
+
+        function selectCornerIndex(idx) {
+            psEngine.activeHandle = idx;
+            document.getElementById('selectedCornerName').innerText = `Selected: ${CORNER_LABELS[idx]}`;
+            
+            for (let i = 0; i < 4; i++) {
+                const btn = document.getElementById(`cBtn-${i}`);
+                if (btn) {
+                    if (i === idx) {
+                        btn.className = "px-2 py-1 text-[10px] font-mono rounded bg-indigo-600 text-white font-bold ring-2 ring-indigo-400";
+                    } else {
+                        btn.className = "px-2 py-1 text-[10px] font-mono rounded bg-slate-800 text-slate-300";
+                    }
+                }
+            }
+            drawTransformCanvas();
+        }
+
+        function nudgeActiveCorner(dx, dy) {
+            const h = psEngine.activeHandle;
+            if (h < 0 || h > 3 || !psEngine.image) return;
+
+            // Micro-nudge 1px or touch step
+            psEngine.corners[h].x = Math.max(0, Math.min(psEngine.image.width, psEngine.corners[h].x + dx));
+            psEngine.corners[h].y = Math.max(0, Math.min(psEngine.image.height, psEngine.corners[h].y + dy));
+            
+            drawTransformCanvas();
+            updateRealtimeDistortPreview();
+        }
+
+        function autoDetectCornersNow() {
+            if (!psEngine.image) return;
+            let corners = null;
+            if (isOpenCvReady && typeof cv !== 'undefined') {
+                try {
+                    corners = detectCardWithOpenCV(psEngine.image);
+                } catch(e) {
+                    corners = detectCardFallback(psEngine.image);
+                }
+            } else {
+                corners = detectCardFallback(psEngine.image);
+            }
+            psEngine.corners = corners;
+            drawTransformCanvas();
+            updateRealtimeDistortPreview();
+        }
+
+        function resetCornersToFull() {
+            if (!psEngine.image) return;
+            psEngine.corners = detectCardFallback(psEngine.image);
+            drawTransformCanvas();
+            updateRealtimeDistortPreview();
+        }
+
+        function initTransformCanvas() {
+            const container = document.getElementById('canvasContainer');
+            const canvas = document.getElementById('transformCanvas');
+            const img = psEngine.image;
+
+            const maxW = container.clientWidth - 16;
+            const maxH = container.clientHeight - 16;
+
+            const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+            psEngine.scale = scale;
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+
+            drawTransformCanvas();
+            setupTouchAndMouseEvents(canvas);
+        }
+
+        function drawTransformCanvas() {
+            const canvas = document.getElementById('transformCanvas');
+            const ctx = canvas.getContext('2d');
+            const scale = psEngine.scale;
+            const corners = psEngine.corners;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. Draw original raw image
+            ctx.drawImage(psEngine.image, 0, 0, canvas.width, canvas.height);
+
+            // 2. Dim outer unselected background
+            ctx.fillStyle = 'rgba(10, 15, 29, 0.65)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 3. Highlight selected document
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(corners[0].x * scale, corners[0].y * scale);
+            ctx.lineTo(corners[1].x * scale, corners[1].y * scale);
+            ctx.lineTo(corners[2].x * scale, corners[2].y * scale);
+            ctx.lineTo(corners[3].x * scale, corners[3].y * scale);
+            ctx.closePath();
+            ctx.clip();
+            ctx.drawImage(psEngine.image, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // 4. Perspective Mesh Lines
+            drawPhotoshopMesh(ctx, corners, scale);
+
+            // 5. Outer border
+            ctx.beginPath();
+            ctx.moveTo(corners[0].x * scale, corners[0].y * scale);
+            ctx.lineTo(corners[1].x * scale, corners[1].y * scale);
+            ctx.lineTo(corners[2].x * scale, corners[2].y * scale);
+            ctx.lineTo(corners[3].x * scale, corners[3].y * scale);
+            ctx.closePath();
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // 6. 4 Handles (Min 44px touch visual cue)
+            const handleColors = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b'];
+            const labels = ['TL', 'TR', 'BR', 'BL'];
+
+            corners.forEach((c, idx) => {
+                const cx = c.x * scale;
+                const cy = c.y * scale;
+                const isSelected = psEngine.activeHandle === idx;
+
+                // Outer Touch Ring
+                ctx.beginPath();
+                ctx.arc(cx, cy, isSelected ? 14 : 11, 0, Math.PI * 2);
+                ctx.fillStyle = isSelected ? '#ffffff' : handleColors[idx];
+                ctx.fill();
+                ctx.strokeStyle = isSelected ? '#0284c7' : '#ffffff';
+                ctx.lineWidth = 2.5;
+                ctx.stroke();
+
+                // Center core
+                ctx.beginPath();
+                ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+                ctx.fillStyle = '#0f172a';
+                ctx.fill();
+
+                // Corner label
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 9px JetBrains Mono';
+                ctx.fillText(labels[idx], cx + 13, cy - 8);
+            });
+        }
+
+        function drawPhotoshopMesh(ctx, corners, scale) {
+            const divs = psEngine.meshDivisions;
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+
+            for (let i = 1; i < divs; i++) {
+                const t = i / divs;
+                // Horizontal
+                const pTop = {
+                    x: (corners[0].x + t * (corners[1].x - corners[0].x)) * scale,
+                    y: (corners[0].y + t * (corners[1].y - corners[0].y)) * scale
+                };
+                const pBottom = {
+                    x: (corners[3].x + t * (corners[2].x - corners[3].x)) * scale,
+                    y: (corners[3].y + t * (corners[2].y - corners[3].y)) * scale
+                };
+                ctx.beginPath();
+                ctx.moveTo(pTop.x, pTop.y);
+                ctx.lineTo(pBottom.x, pBottom.y);
+                ctx.stroke();
+
+                // Vertical
+                const pLeft = {
+                    x: (corners[0].x + t * (corners[3].x - corners[0].x)) * scale,
+                    y: (corners[0].y + t * (corners[3].y - corners[0].y)) * scale
+                };
+                const pRight = {
+                    x: (corners[1].x + t * (corners[2].x - corners[1].x)) * scale,
+                    y: (corners[1].y + t * (corners[2].y - corners[1].y)) * scale
+                };
+                ctx.beginPath();
+                ctx.moveTo(pLeft.x, pLeft.y);
+                ctx.lineTo(pRight.x, pRight.y);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+        }
+
+        // --- Touch & Mouse Event Controller with Finger-Safe Loupe Offset ---
+        function setupTouchAndMouseEvents(canvas) {
+            let isDragging = false;
+            const loupe = document.getElementById('zoomLoupe');
+            const loupeCanvas = document.getElementById('loupeCanvas');
+            const loupeCtx = loupeCanvas.getContext('2d');
+
+            function getCoords(e) {
+                const rect = canvas.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                return {
+                    imgX: (clientX - rect.left) / psEngine.scale,
+                    imgY: (clientY - rect.top) / psEngine.scale,
+                    clientX,
+                    clientY
+                };
+            }
+
+            // Enhanced 44px+ hit area for comfortable mobile touch
+            function getNearestCorner(imgX, imgY) {
+                const threshold = 44 / psEngine.scale;
+                for (let i = 0; i < 4; i++) {
+                    const c = psEngine.corners[i];
+                    if (Math.hypot(c.x - imgX, c.y - imgY) <= threshold) {
+                        return i;
+                    }
+                }
+                return -1;
+            }
+
+            // Finger-safe Loupe: Positioned 70px above touch position so finger never covers the view
+            function updateLoupe(imgX, imgY, clientX, clientY) {
+                loupe.style.left = `${clientX - 56}px`;
+                loupe.style.top = `${clientY - 120}px`;
+                loupe.classList.remove('hidden');
+
+                loupeCtx.clearRect(0, 0, 112, 112);
+                loupeCtx.drawImage(
+                    psEngine.image,
+                    imgX - 24, imgY - 24, 48, 48,
+                    0, 0, 112, 112
+                );
+            }
+
+            const onStart = (e) => {
+                const pos = getCoords(e);
+                const handle = getNearestCorner(pos.imgX, pos.imgY);
+                if (handle !== -1) {
+                    isDragging = true;
+                    selectCornerIndex(handle);
+                    updateLoupe(pos.imgX, pos.imgY, pos.clientX, pos.clientY);
+                    if (e.cancelable) e.preventDefault();
+                }
+            };
+
+            const onMove = (e) => {
+                const pos = getCoords(e);
+                if (isDragging && psEngine.activeHandle !== -1) {
+                    const h = psEngine.activeHandle;
+                    psEngine.corners[h].x = Math.max(0, Math.min(psEngine.image.width, pos.imgX));
+                    psEngine.corners[h].y = Math.max(0, Math.min(psEngine.image.height, pos.imgY));
+                    drawTransformCanvas();
+                    updateRealtimeDistortPreview();
+                    updateLoupe(psEngine.corners[h].x, psEngine.corners[h].y, pos.clientX, pos.clientY);
+                    if (e.cancelable) e.preventDefault();
+                } else {
+                    const hover = getNearestCorner(pos.imgX, pos.imgY);
+                    if (hover !== psEngine.hoverHandle) {
+                        psEngine.hoverHandle = hover;
+                        drawTransformCanvas();
+                        canvas.style.cursor = hover !== -1 ? 'grab' : 'crosshair';
+                    }
+                }
+            };
+
+            const onEnd = () => {
+                if (isDragging) {
+                    isDragging = false;
+                    loupe.classList.add('hidden');
+                    drawTransformCanvas();
+                    updateRealtimeDistortPreview();
+                }
+            };
+
+            canvas.onmousedown = onStart;
+            window.onmousemove = onMove;
+            window.onmouseup = onEnd;
+
+            canvas.addEventListener('touchstart', onStart, { passive: false });
+            window.addEventListener('touchmove', onMove, { passive: false });
+            window.addEventListener('touchend', onEnd);
+        }
+
+        function updateRealtimeDistortPreview() {
+            const outCanvas = document.getElementById('realtimeDistortOutputCanvas');
+            outCanvas.width = 428;
+            outCanvas.height = 270;
+            const warpedUrl = warpPerspectiveCrop(psEngine.image, psEngine.corners, 428, 270);
+            const img = new Image();
+            img.onload = () => {
+                const ctx = outCanvas.getContext('2d');
+                ctx.clearRect(0, 0, outCanvas.width, outCanvas.height);
+                ctx.drawImage(img, 0, 0, outCanvas.width, outCanvas.height);
+            };
+            img.src = warpedUrl;
+        }
+
+        function commitDistortToSlot() {
+            if (!currentActiveSlot) return;
+            const slot = cardSlots[currentActiveSlot - 1];
+            slot.corners = orderCardCorners(psEngine.corners);
+            slot.croppedImage = warpPerspectiveCrop(psEngine.image, slot.corners, 1012, 638);
+
+            updateSlotPreview(currentActiveSlot);
+            updateSheetPreview(currentActiveSlot);
+            closePhotoshopModal();
+        }
+
+        function warpPerspectiveCrop(img, corners, outW = 1012, outH = 638) {
+            const outCanvas = document.createElement('canvas');
+            outCanvas.width = outW;
+            outCanvas.height = outH;
+
+            if (isOpenCvReady && typeof cv !== 'undefined') {
+                try {
+                    let tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = img.width;
+                    tempCanvas.height = img.height;
+                    let tempCtx = tempCanvas.getContext('2d');
+                    tempCtx.drawImage(img, 0, 0);
+
+                    let src = cv.imread(tempCanvas);
+                    let dst = new cv.Mat();
+
+                    let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                        corners[0].x, corners[0].y,
+                        corners[1].x, corners[1].y,
+                        corners[2].x, corners[2].y,
+                        corners[3].x, corners[3].y
+                    ]);
+
+                    let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                        0, 0,
+                        outW, 0,
+                        outW, outH,
+                        0, outH
+                    ]);
+
+                    let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+                    cv.warpPerspective(src, dst, M, new cv.Size(outW, outH), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+                    cv.imshow(outCanvas, dst);
+
+                    src.delete();
+                    dst.delete();
+                    srcCoords.delete();
+                    dstCoords.delete();
+                    M.delete();
+
+                    return outCanvas.toDataURL('image/jpeg', 0.98);
+                } catch (e) {
+                    console.warn("Warp fallback triggered:", e);
+                }
+            }
+
+            return warpBilinearFallback(img, corners, outW, outH);
+        }
+
+        function warpBilinearFallback(img, corners, outW, outH) {
+            const canvas = document.createElement('canvas');
+            canvas.width = outW;
+            canvas.height = outH;
+            const ctx = canvas.getContext('2d');
+
+            const minX = Math.max(0, Math.min(...corners.map(p => p.x)));
+            const maxX = Math.min(img.width, Math.max(...corners.map(p => p.x)));
+            const minY = Math.max(0, Math.min(...corners.map(p => p.y)));
+            const maxY = Math.min(img.height, Math.max(...corners.map(p => p.y)));
+
+            ctx.drawImage(img, minX, minY, (maxX - minX), (maxY - minY), 0, 0, outW, outH);
+            return canvas.toDataURL('image/jpeg', 0.98);
+        }
+
+        function rotateSlotImage(slotNum) {
+            const slot = cardSlots[slotNum - 1];
+            if (!slot.croppedImage) return;
+
+            const img = new Image();
+            img.onload = () => {
+                const rCanvas = document.createElement('canvas');
+                rCanvas.width = img.height;
+                rCanvas.height = img.width;
+                const ctx = rCanvas.getContext('2d');
+                ctx.translate(rCanvas.width / 2, rCanvas.height / 2);
+                ctx.rotate(90 * Math.PI / 180);
+                ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+                slot.croppedImage = rCanvas.toDataURL('image/jpeg', 0.98);
+                updateSlotPreview(slotNum);
+                updateSheetPreview(slotNum);
+            };
+            img.src = slot.croppedImage;
+        }
+
+        function updateSlotPreview(slotNum) {
+            const slot = cardSlots[slotNum - 1];
+            const previewBox = document.getElementById(`slot-preview-box-${slotNum}`);
+            const emptyState = document.getElementById(`slot-empty-state-${slotNum}`);
+            const imgEl = document.getElementById(`slot-img-${slotNum}`);
+            const rotBtn = document.getElementById(`rot-btn-${slotNum}`);
+            const cropBtn = document.getElementById(`crop-btn-${slotNum}`);
+            const clearBtn = document.getElementById(`clear-btn-${slotNum}`);
+
+            if (slot.croppedImage) {
+                imgEl.src = slot.croppedImage;
+                imgEl.classList.remove('hidden');
+                emptyState.classList.add('hidden');
+                rotBtn.classList.remove('hidden');
+                cropBtn.classList.remove('hidden');
+                clearBtn.classList.remove('hidden');
+                previewBox.classList.remove('border-dashed', 'border-slate-700');
+                previewBox.classList.add('border-solid', 'border-cyan-500/80');
+            } else {
+                imgEl.src = '';
+                imgEl.classList.add('hidden');
+                emptyState.classList.remove('hidden');
+                rotBtn.classList.add('hidden');
+                cropBtn.classList.add('hidden');
+                clearBtn.classList.add('hidden');
+                previewBox.classList.add('border-dashed', 'border-slate-700');
+                previewBox.classList.remove('border-solid', 'border-cyan-500/80');
+            }
+        }
+
+        function updateSheetPreview(slotNum) {
+            const slot = cardSlots[slotNum - 1];
+            const cell = document.getElementById(`sheet-cell-${slotNum}`);
+            const img = document.getElementById(`sheet-img-${slotNum}`);
+
+            if (slot.croppedImage) {
+                img.src = slot.croppedImage;
+                img.classList.remove('hidden');
+                cell.classList.remove('empty-slot');
+                cell.classList.add('has-card');
+                cell.style.background = "#ffffff";
+            } else {
+                img.src = '';
+                img.classList.add('hidden');
+                cell.classList.add('empty-slot');
+                cell.classList.remove('has-card');
+                cell.style.background = "transparent";
+            }
+        }
+
+        function updateCountBadge() {
+            const filled = cardSlots.filter(s => s.croppedImage !== null).length;
+            const badge = document.getElementById('cardCountBadge');
+            const badgeM = document.getElementById('cardCountBadgeMobile');
+            
+            if (badge) badge.innerText = `${filled} / ${TOTAL_SLOTS} Cards`;
+            if (badgeM) badgeM.innerText = `${filled}/${TOTAL_SLOTS}`;
+            
+            if (filled > 0) {
+                if (badge) badge.className = "hidden sm:inline-block text-xs font-mono px-2.5 py-1 bg-cyan-950 text-cyan-300 rounded-lg border border-cyan-700/60 font-semibold";
+                if (badgeM) badgeM.className = "text-[11px] font-mono px-2 py-0.5 bg-cyan-950 text-cyan-300 rounded-md border border-cyan-700/60 font-semibold";
+            } else {
+                if (badge) badge.className = "hidden sm:inline-block text-xs font-mono px-2.5 py-1 bg-slate-800 text-slate-400 rounded-lg border border-slate-700";
+                if (badgeM) badgeM.className = "text-[11px] font-mono px-2 py-0.5 bg-slate-800 text-slate-400 rounded-md border border-slate-700";
+            }
+        }
+
+        function toggleCuttingMarks() {
+            showCuttingMarks = !showCuttingMarks;
+            const statusEl = document.getElementById('cropMarksStatus');
+            if (statusEl) {
+                statusEl.innerText = showCuttingMarks ? "ON" : "OFF";
+                statusEl.className = showCuttingMarks ? "text-emerald-400 font-semibold" : "text-slate-400 font-semibold";
+            }
+
+            document.querySelectorAll('.crop-mark').forEach(mark => {
+                if (showCuttingMarks) {
+                    mark.classList.remove('hidden');
+                } else {
+                    mark.classList.add('hidden');
+                }
+            });
+        }
+
+        function clearSingleSlot(slotNum) {
+            cardSlots[slotNum - 1] = {
+                id: slotNum,
+                originalImage: null,
+                croppedImage: null,
+                fileName: null,
+                corners: null
+            };
+            updateSlotPreview(slotNum);
+            updateSheetPreview(slotNum);
+            updateCountBadge();
+        }
+
+        function clearAllSlots() {
+            for (let i = 1; i <= TOTAL_SLOTS; i++) {
+                clearSingleSlot(i);
+            }
+        }
+
+        // --- Camera Handling ---
+        async function openCameraModal(slotNumber) {
+            currentActiveSlot = slotNumber;
+            document.getElementById('cameraModalTitle').innerText = `Camera Capture (Slot #${slotNumber})`;
+            const modal = document.getElementById('cameraModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            await startWebcam(currentFacingMode);
+        }
+
+        async function startWebcam(facingMode) {
+            if (webcamStream) {
+                webcamStream.getTracks().forEach(t => t.stop());
+            }
+
+            try {
+                const constraints = {
+                    video: {
+                        facingMode: facingMode,
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    },
+                    audio: false
+                };
+                webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+                document.getElementById('webcamVideo').srcObject = webcamStream;
+            } catch (err) {
+                console.error("Camera access error:", err);
+                closeCameraModal();
+            }
+        }
+
+        function switchCamera() {
+            currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+            startWebcam(currentFacingMode);
+        }
+
+        function closeCameraModal() {
+            if (webcamStream) {
+                webcamStream.getTracks().forEach(t => t.stop());
+                webcamStream = null;
+            }
+            const modal = document.getElementById('cameraModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function takeSnapshot() {
+            const video = document.getElementById('webcamVideo');
+            if (!video.videoWidth) return;
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const ctx = tempCanvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+
+            const snapImg = new Image();
+            snapImg.onload = () => {
+                const target = currentActiveSlot;
+                closeCameraModal();
+                executeCardDetectionPipeline(snapImg, target, `Cam-${target}.jpg`, true);
+            };
+            snapImg.src = tempCanvas.toDataURL('image/jpeg', 0.98);
+        }
+
+        // --- Exact 1:1 Physical Scale Printing & Clean 300 DPI PDF ---
+        function syncPrintDOM() {
+            const printGrid = document.getElementById('directPrintGrid');
+            printGrid.innerHTML = '';
+
+            for (let i = 1; i <= TOTAL_SLOTS; i++) {
+                const slot = cardSlots[i - 1];
+                const cell = document.createElement('div');
+                cell.className = "card-cell-printable";
+                cell.style.width = "85.6mm";
+                cell.style.height = "53.98mm";
+
+                if (!slot.croppedImage) {
+                    cell.className += " empty-slot";
+                    cell.style.visibility = "hidden";
+                    printGrid.appendChild(cell);
+                    continue;
+                }
+
+                cell.innerHTML = `
+                    <div class="crop-mark top-0 left-0 border-t-2 border-l-2 w-2.5 h-2.5 -translate-x-1 -translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <div class="crop-mark top-0 right-0 border-t-2 border-r-2 w-2.5 h-2.5 translate-x-1 -translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <div class="crop-mark bottom-0 left-0 border-b-2 border-l-2 w-2.5 h-2.5 -translate-x-1 translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <div class="crop-mark bottom-0 right-0 border-b-2 border-r-2 w-2.5 h-2.5 translate-x-1 translate-y-1 ${showCuttingMarks ? '' : 'hidden'}"></div>
+                    <img src="${slot.croppedImage}" style="width: 85.6mm; height: 53.98mm; object-fit: cover; display: block;" alt="Card ${i}">
+                `;
+                printGrid.appendChild(cell);
+            }
+        }
+
+        function handlePrint() {
+            syncPrintDOM();
+            window.print();
+        }
+
+        async function downloadPDF() {
+            const pdfBtn = document.getElementById('pdfBtn');
+            const origHtml = pdfBtn ? pdfBtn.innerHTML : null;
+            if (pdfBtn) {
+                pdfBtn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Saving...`;
+                pdfBtn.disabled = true;
+            }
+
+            try {
+                const { jsPDF } = window.jspdf;
+                const pdf = new jsPDF({
+                    orientation: 'portrait',
+                    unit: 'mm',
+                    format: 'a4',
+                    compress: true
+                });
+
+                const colWidth = 85.6;
+                const rowHeight = 53.98;
+                const colGap = 8.0;
+                const rowGap = 6.5;
+                const startX = (210 - (2 * colWidth + colGap)) / 2;
+                const startY = (297 - (4 * rowHeight + 3 * rowGap)) / 2;
+
+                for (let i = 0; i < TOTAL_SLOTS; i++) {
+                    const slot = cardSlots[i];
+                    if (!slot.croppedImage) continue;
+
+                    const col = i % 2;
+                    const row = Math.floor(i / 2);
+                    const posX = startX + col * (colWidth + colGap);
+                    const posY = startY + row * (rowHeight + rowGap);
+
+                    pdf.addImage(slot.croppedImage, 'JPEG', posX, posY, colWidth, rowHeight);
+
+                    if (showCuttingMarks) {
+                        pdf.setDrawColor(180, 180, 180);
+                        pdf.setLineWidth(0.25);
+                        const markLen = 2.5;
+                        pdf.line(posX - markLen, posY, posX, posY);
+                        pdf.line(posX, posY - markLen, posX, posY);
+                        pdf.line(posX + colWidth, posY, posX + colWidth + markLen, posY);
+                        pdf.line(posX + colWidth, posY - markLen, posX + colWidth, posY);
+                        pdf.line(posX - markLen, posY + rowHeight, posX, posY + rowHeight);
+                        pdf.line(posX, posY + rowHeight, posX, posY + rowHeight + markLen);
+                        pdf.line(posX + colWidth, posY + rowHeight, posX + colWidth + markLen, posY + rowHeight);
+                        pdf.line(posX + colWidth, posY + rowHeight, posX + colWidth, posY + rowHeight + markLen);
+                    }
+                }
+
+                pdf.save('ATM_Cards_A4_Print.pdf');
+            } catch (err) {
+                console.error("PDF creation error:", err);
+            } finally {
+                if (pdfBtn && origHtml) {
+                    pdfBtn.innerHTML = origHtml;
+                    pdfBtn.disabled = false;
+                    lucide.createIcons();
+                }
+            }
+        }
+
+        // --- Lifecycle & Window Resizing ---
+        window.addEventListener('DOMContentLoaded', () => {
+            initializeSlotsUI();
+        });
+
+        window.addEventListener('resize', () => {
+            fitA4SheetResponsive();
+            if (currentActiveSlot && psEngine.image) {
+                initTransformCanvas();
+            }
+        });
+    </script>
+</body>
+</html>
